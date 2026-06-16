@@ -1,0 +1,254 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  student
+  admin
+}
+
+enum QuizStatus {
+  draft
+  active
+  closed
+}
+
+enum SessionStatus {
+  active
+  submitted
+  expired
+}
+
+enum QuestionType {
+  mcq
+}
+
+enum EventType {
+  focus
+  blur
+  answer_changed
+  revisit
+  submitted
+}
+
+// ─────────────────────────────────────────────
+// IMPROVEMENT 2: Demographics split into a
+// separate 1-to-1 table to keep users lean and
+// allow independent querying / anonymisation.
+// ─────────────────────────────────────────────
+model StudentProfile {
+  user_id String @id @map("user_id")
+
+  // demographics
+  section String?
+  gender  String?
+  medium  String? // e.g. "Hindi", "English"
+
+  // academic background
+  class9_marks    Float? @map("class9_marks")
+  interest_rating Int?   @map("interest_rating") // 1–5
+
+  // prior exposure
+  chapter_studied String? @map("chapter_studied")
+  study_hours     Float?  @map("study_hours")
+  school          String?
+  class_grade      Int?    @map("class_grade")
+
+  // IRT ability estimate (theta), seeded from the diagnostic 2PL fit.
+  // theta_se is the standard error / uncertainty from the fit.
+    theta    Float? @map("theta")
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@map("student_profiles")
+}
+
+model User {
+  id            String   @id @default(uuid())
+  name          String
+  email         String   @unique
+  roll_no       String?  @unique @map("roll_no")
+  password_hash String   @map("password_hash")
+  role          Role     @default(student)
+  created_at    DateTime @default(now()) @map("created_at")
+  updated_at    DateTime @default(now()) @updatedAt @map("updated_at")
+
+  profile           StudentProfile?
+  sessions          Session[]
+  student_masteries StudentMastery[]
+  quizzes_created   Quiz[]
+
+  @@map("users")
+}
+
+model Quiz {
+  id               String     @id @default(uuid())
+  title            String
+  description      String?
+  created_by       String     @map("created_by")
+  creator          User       @relation(fields: [created_by], references: [id])
+  duration_seconds Int        @map("duration_seconds")
+  shuffle_questions Boolean   @default(false) @map("shuffle_questions")
+  status           QuizStatus @default(draft)
+  start_time       DateTime?  @map("start_time")
+  created_at       DateTime   @default(now()) @map("created_at")
+  updated_at       DateTime   @default(now()) @updatedAt @map("updated_at")
+
+  questions Question[]
+  sessions  Session[]
+
+  @@map("quizzes")
+}
+
+// Concept is a learning objective / topic that a question tests.
+model Concept {
+  concept_id      String  @id @default(uuid()) @map("concept_id")
+  concept_name    String  @unique @map("concept_name") // e.g. "Ohm's Law", "Quadratic Equations"
+  description     String?
+  chapter         String?
+  ncert_section   String? @map("ncert_section")
+  bloom_level     String? @map("bloom_level")
+  difficulty_level Int?   @map("difficulty_level")
+  concept_type    String? @map("concept_type")
+  misconception   String?
+  formula         String?
+  unit            String?
+  quiz_in_scope   String? @map("quiz_in_scope")
+
+  questions Question[]
+
+  prerequisites    Concept[]        @relation("ConceptPrerequisites")
+  subsequents      Concept[]        @relation("ConceptPrerequisites")
+  studentMasteries StudentMastery[]
+  sessionAnswers   SessionAnswer[]
+
+  @@map("concepts")
+}
+
+model Question {
+  question_id   String       @id @default(uuid()) @map("question_id")
+  quiz_id       String?      @map("quiz_id")
+  stem          String       @map("stem")
+  question_type String?      @default("mcq") @map("question_type")
+  options       Json?        // Array of { id: string, text: string } - kept for backward compatibility
+  correct_answer String      @map("correct_answer")
+  marks         Int          @default(1)
+  order_index    Int?        @default(0) @map("order_index")
+  updatedAt     DateTime     @default(now()) @updatedAt @map("updated_at")
+
+  quiz Quiz? @relation(fields: [quiz_id], references: [id], onDelete: Cascade)
+
+  concepts Concept[] // relation remains for API usage
+
+  // New columns from XLSX/Python script
+  concept_ids       String? @map("concept_ids") 
+  wrong_a_confusion String? @map("wrong_a_confusion")
+  wrong_b_confusion String? @map("wrong_b_confusion")
+  wrong_c_confusion String? @map("wrong_c_confusion")
+  wrong_d_confusion String? @map("wrong_d_confusion")
+  chapter           String?
+  bloom_level       String? @map("bloom_level")
+  difficulty        Int?
+  option_a          String? @map("option_a")
+  option_b          String? @map("option_b")
+  option_c          String? @map("option_c")
+  option_d          String? @map("option_d")
+  correct_reasoning String? @map("correct_reasoning")
+
+  // IRT 2PL item parameters, fitted from diagnostic responses by scripts/irt_fit.py.
+  // irt_difficulty = b (item difficulty), irt_discrimination = a (item discrimination).
+  irt_difficulty     Float? @map("irt_difficulty")
+  irt_discrimination Float? @map("irt_discrimination")
+
+  events  QuestionEvent[]
+  answers SessionAnswer[]
+
+  @@map("questions")
+}
+model Session {
+  id            String        @id @default(uuid())
+  student_id    String        @map("student_id")
+  quiz_id       String        @map("quiz_id")
+  started_at    DateTime      @default(now()) @map("started_at")
+  submitted_at  DateTime?     @map("submitted_at")
+  status        SessionStatus @default(active)
+  score         Int?
+  total_marks   Int?          @map("total_marks")
+  ip_address    String?       @map("ip_address")
+  quiz_type     String?       @default("diagnostic") @map("quiz_type")
+  total_correct Int?          @map("total_correct")
+  score_percent Float?        @map("score_percent")
+
+  student User @relation(fields: [student_id], references: [id])
+  quiz    Quiz @relation(fields: [quiz_id], references: [id])
+
+  events  QuestionEvent[]
+  answers SessionAnswer[]
+
+  @@map("sessions")
+}
+
+// QuestionEvent — fine-grained behavioural telemetry per question per session.
+model QuestionEvent {
+  id          BigInt    @id @default(autoincrement())
+  session_id  String    @map("session_id")
+  question_id String    @map("question_id")
+  event_type  EventType @map("event_type")
+  payload     Json?
+  created_at  DateTime  @default(now()) @map("created_at")
+  archived_at DateTime? @map("archived_at")
+
+  session  Session  @relation(fields: [session_id], references: [id])
+  question Question @relation(fields: [question_id], references: [question_id])
+
+  @@index([session_id, created_at])
+  @@index([archived_at])
+  @@index([question_id])
+  @@map("question_events")
+}
+
+// SessionAnswer = one response row per question per session.
+model SessionAnswer {
+  id                BigInt    @id @default(autoincrement()) @map("response_id")
+  session_id        String    @map("session_id")
+  question_id       String    @map("question_id")
+  selected_answer    String?   @map("selected_answer")
+  is_correct        Boolean?  @map("is_correct")
+  time_spent_ms     BigInt    @default(0) @map("time_taken_ms")
+  confidence_rating Int?      @map("confidence_rating")
+  timestamp         DateTime  @default(now()) @updatedAt
+  change_count      Int       @default(0) @map("change_count")
+  marked_for_review Boolean   @default(false) @map("marked_for_review")
+  concept_id        String?   @map("concept_id")
+  session_date      DateTime? @db.Date @map("session_date")
+
+  session  Session  @relation(fields: [session_id], references: [id])
+  question Question @relation(fields: [question_id], references: [question_id])
+  concept  Concept? @relation(fields: [concept_id], references: [concept_id])
+
+  @@unique([session_id, question_id])
+  @@index([session_id])
+  @@index([question_id])
+  @@map("session_answers")
+}
+
+// StudentMastery — BKT probability per student per concept.
+model StudentMastery {
+  student_id    String   @map("student_id")
+  concept_id    String   @map("concept_id")
+  mastery_prob  Float    @default(0.2) @map("mastery_prob") // 0.0–1.0
+  attempt_count Int      @default(0) @map("attempt_count")
+  correct_count Int      @default(0) @map("correct_count")
+  last_seen     DateTime @default(now()) @updatedAt @map("last_seen")
+
+  student User    @relation(fields: [student_id], references: [id], onDelete: Cascade)
+  concept Concept @relation(fields: [concept_id], references: [concept_id], onDelete: Cascade)
+
+  @@id([student_id, concept_id])
+  @@map("student_masteries")
+}
