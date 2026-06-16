@@ -10,13 +10,16 @@ export const register = async (req: Request, res: Response) => {
     if (existing) return res.status(409).json({ error: 'Email already in use' });
 
     // Generate auto-incrementing Roll Number for students
-    const roll_no = await prisma.$transaction(async (tx) => {
-      const count = await tx.user.count({ where: { role: 'student' } });
-      return `STU-${String(count + 1).padStart(4, '0')}`;
-    });
+    let roll_no: string | null = null;
+
+    if ((role || "student") === "student") {
+      const count = await prisma.user.count({
+        where: { role: "student" },
+      });
+
+      roll_no = `STU-${String(count + 1).padStart(4, "0")}`;
+    }
     const password_hash = await bcrypt.hash(password, 10);
-    console.log("REGISTER BODY:", req.body);
-    console.log("Generated roll_no:", roll_no);
     const user = await prisma.user.create({
       data: { name, email, password_hash, role: role || "student", roll_no },
     });
